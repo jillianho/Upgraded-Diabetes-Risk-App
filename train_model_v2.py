@@ -199,6 +199,26 @@ print(f"\n   Class distribution:")
 print(f"   • No diabetes: {diabetes_counts[0]:,} ({diabetes_counts[0]/len(df_model)*100:.1f}%)")
 print(f"   • Diabetes: {diabetes_counts[1]:,} ({diabetes_counts[1]/len(df_model)*100:.1f}%)")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# FIX: BALANCE THE CLASSES (so model learns to identify high-risk cases)
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("\n⚖️  Balancing classes...")
+
+# Separate by class
+df_no_diabetes = df_model[df_model['diabetes_binary'] == 0]
+df_diabetes = df_model[df_model['diabetes_binary'] == 1]
+
+# Undersample the majority class to 2:1 ratio
+n_diabetes = len(df_diabetes)
+n_no_diabetes_sample = min(len(df_no_diabetes), n_diabetes * 2)
+
+df_no_diabetes_sampled = df_no_diabetes.sample(n=n_no_diabetes_sample, random_state=42)
+df_model = pd.concat([df_no_diabetes_sampled, df_diabetes]).sample(frac=1, random_state=42).reset_index(drop=True)
+
+print(f"   Balanced dataset: {len(df_model):,} samples")
+print(f"   New ratio - No diabetes: {(df_model['diabetes_binary']==0).sum():,}, Diabetes: {(df_model['diabetes_binary']==1).sum():,}")
+
 # Demographics breakdown
 print(f"\n   Demographics:")
 print(f"   • Male: {(df_model['sex']==1).sum():,}")
@@ -269,6 +289,45 @@ roc_auc = roc_auc_score(y_test, y_prob)
 
 print(f"\n   Test Accuracy: {accuracy:.1%}")
 print(f"   ROC-AUC Score: {roc_auc:.3f}")
+
+# Test worst-case scenario
+print("\n🧪 Testing predictions...")
+worst_case = pd.DataFrame([[
+    10,    # pregnancies
+    45,    # bmi (morbidly obese)
+    100,   # blood_pressure (high)
+    70,    # age
+    1,     # sex (male)
+    1,     # ethnicity
+    1,     # high_bp (yes)
+    1,     # high_chol (yes)
+    0,     # phys_active (no)
+    1,     # smoker (yes)
+    5,     # gen_health (poor)
+    1      # sleep_trouble (yes)
+]], columns=final_feature_cols)
+
+best_case = pd.DataFrame([[
+    0,     # pregnancies
+    22,    # bmi (healthy)
+    70,    # blood_pressure (normal)
+    25,    # age (young)
+    0,     # sex (female)
+    0,     # ethnicity
+    0,     # high_bp (no)
+    0,     # high_chol (no)
+    1,     # phys_active (yes)
+    0,     # smoker (no)
+    1,     # gen_health (excellent)
+    0      # sleep_trouble (no)
+]], columns=final_feature_cols)
+
+worst_prob = model.predict_proba(worst_case)[0][1]
+best_prob = model.predict_proba(best_case)[0][1]
+
+print(f"   • Worst case (unhealthy 70yo): {worst_prob:.1%} risk")
+print(f"   • Best case (healthy 25yo): {best_prob:.1%} risk")
+print(f"   • Range: {best_prob:.1%} → {worst_prob:.1%} ✓")
 
 print("\n   Classification Report:")
 print(classification_report(y_test, y_pred, target_names=['No Diabetes', 'Diabetes']))
