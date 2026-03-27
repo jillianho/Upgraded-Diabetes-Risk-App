@@ -202,7 +202,12 @@ if st.session_state["page"] == "results":
             delta += (baseline.get("gluc", sim_gluc) - sim_gluc) * 0.15
             sim_risk = int(max(1, min(99, round(risk_pct - delta))))
 
-            st.metric("Simulated risk", f"{sim_risk}%", f"{sim_risk - risk_pct:+d}% vs baseline")
+            st.metric(
+                "Simulated risk",
+                f"{sim_risk}%",
+                f"{sim_risk - risk_pct:+d}% vs baseline",
+                delta_color="inverse",
+            )
 
         with tab_next:
             st.markdown("#### This week")
