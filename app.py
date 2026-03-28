@@ -363,16 +363,26 @@ def synced_slider_number(label, min_value, max_value, value, step=None, format=N
     if key is None:
         key = label.replace(" ", "_").lower()
     state_key = f"{key}_value"
+    slider_key = f"{key}_slider"
+    number_key = f"{key}_number"
+
+    # Initialise all three keys before any widget is rendered so that
+    # widgets are never given both a `value=` argument AND a pre-existing
+    # session-state key (which causes the Streamlit warning).
     if state_key not in st.session_state:
         st.session_state[state_key] = value
+    if slider_key not in st.session_state:
+        st.session_state[slider_key] = st.session_state[state_key]
+    if number_key not in st.session_state:
+        st.session_state[number_key] = st.session_state[state_key]
 
     def _slider_changed():
-        st.session_state[state_key] = st.session_state[f"{key}_slider"]
-        st.session_state[f"{key}_number"] = st.session_state[state_key]
+        st.session_state[state_key] = st.session_state[slider_key]
+        st.session_state[number_key] = st.session_state[state_key]
 
     def _number_changed():
-        st.session_state[state_key] = st.session_state[f"{key}_number"]
-        st.session_state[f"{key}_slider"] = st.session_state[state_key]
+        st.session_state[state_key] = st.session_state[number_key]
+        st.session_state[slider_key] = st.session_state[state_key]
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -380,10 +390,9 @@ def synced_slider_number(label, min_value, max_value, value, step=None, format=N
             label,
             min_value=min_value,
             max_value=max_value,
-            value=st.session_state[state_key],
             step=step,
             format=format,
-            key=f"{key}_slider",
+            key=slider_key,
             on_change=_slider_changed,
         )
     with col2:
@@ -391,10 +400,9 @@ def synced_slider_number(label, min_value, max_value, value, step=None, format=N
             "",
             min_value=min_value,
             max_value=max_value,
-            value=st.session_state[state_key],
             step=step,
             format=format,
-            key=f"{key}_number",
+            key=number_key,
             on_change=_number_changed,
             label_visibility="collapsed"
         )
