@@ -74,7 +74,7 @@ def generate_report_pdf(data: dict) -> bytes:
         _section(pdf, "Top Risk Drivers")
         pdf.set_font("Helvetica", "", 9)
         for f in risk_bars:
-            pdf.cell(0, 5, f"  -  {f['name']} - {f['note']}", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 5, _sanitize(f"  -  {f['name']} - {f['note']}"), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(3)
 
     # ── Action Plan ──
