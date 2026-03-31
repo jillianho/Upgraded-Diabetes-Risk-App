@@ -2,7 +2,50 @@ import streamlit as st
 import pickle
 import numpy as np
 import pandas as pd
+import json
+import os
+from datetime import datetime
 from diabetes_proxies import PatientInputs, build_feature_vector, generate_results_content
+from population_stats import compute_percentiles
+from pdf_export import generate_report_pdf
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UNIT CONVERSION HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def lbs_to_kg(lbs: float) -> float:
+    return lbs * 0.453592
+
+def kg_to_lbs(kg: float) -> float:
+    return kg / 0.453592
+
+def inches_to_cm(inches: float) -> float:
+    return inches * 2.54
+
+def cm_to_inches(cm: float) -> float:
+    return cm / 2.54
+
+def mmol_to_mgdl(mmol: float) -> float:
+    return mmol * 18.0
+
+def mgdl_to_mmol(mgdl: float) -> float:
+    return mgdl / 18.0
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROGRESS TRACKING HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "risk_history.json")
+
+def _load_history() -> list:
+    if os.path.exists(_HISTORY_FILE):
+        with open(_HISTORY_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def _save_history(history: list):
+    with open(_HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG (must be first!)
@@ -12,7 +55,7 @@ st.set_page_config(
     page_title="GlycoCast - Diabetes Risk Calculator",
     page_icon="🩺",
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -21,6 +64,26 @@ st.set_page_config(
 
 if "page" not in st.session_state:
     st.session_state["page"] = "input"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR — Units & Settings
+# ══════════════════════════════════════════════════════════════════════════════
+
+with st.sidebar:
+    st.markdown("### ⚙️ Settings")
+
+    st.markdown("**Unit preferences**")
+    weight_unit = st.radio("Weight", ["kg", "lbs"], horizontal=True, key="weight_unit")
+    length_unit = st.radio("Height / Waist", ["cm", "inches"], horizontal=True, key="length_unit")
+    glucose_unit = st.radio("Glucose", ["mg/dL", "mmol/L"], horizontal=True, key="glucose_unit")
+
+    st.markdown("---")
+    st.markdown("**Progress history**")
+    history = _load_history()
+    st.caption(f"{len(history)} saved assessment(s)")
+    if history and st.button("🗑️ Clear history"):
+        _save_history([])
+        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RESULTS PAGE (keep your existing results logic)
@@ -118,7 +181,9 @@ if st.session_state["page"] == "results":
 
         st.markdown('<div class="results-wrap">', unsafe_allow_html=True)
 
-        tab_results, tab_breakdown, tab_whatif, tab_next = st.tabs(["Results", "Risk breakdown", "What if?", "Next steps"])
+        tab_results, tab_breakdown, tab_whatif, tab_next, tab_population, tab_progress, tab_export = st.tabs(
+            ["Results", "Risk breakdown", "What if?", "Next steps", "Population", "Progress", "Export PDF"]
+        )
 
         with tab_results:
             st.markdown(
@@ -222,6 +287,95 @@ if st.session_state["page"] == "results":
             st.markdown("#### Lab tests")
             for item in data.get("lab_tests", []):
                 st.markdown(f"- {item}")
+
+        # ── Population Comparison Tab ──
+        with tab_population:
+            st.markdown("#### How you compare to your age group")
+            pctl = compute_percentiles(
+                age=data.get("baseline", {}).get("age", 35),
+                bmi=data.get("bmi", 25),
+                bp_dia=data.get("bp", 80),
+                waist_cm=data.get("waist"),
+            )
+            st.caption(f"Based on {pctl['n_in_group']:,} NHANES participants aged {pctl['age_group']}")
+
+            def _pctl_bar(label, info):
+                if info is None:
+                    return
+                p = info["percentile"]
+                color = "#639922" if p < 50 else "#EF9F27" if p < 75 else "#E24B4A"
+                val_str = f"{info['value']}"
+                med_str = f"Median: {info['median']}" if "median" in info else ""
+                st.markdown(
+                    f'<div class="bar-row"><div class="bar-head"><span>{label}</span>'
+                    f'<span style="color:{color};font-weight:600">{p}th percentile</span></div>'
+                    f'<div class="bar-track"><div style="height:100%;background:{color};width:{p}%"></div></div>'
+                    f'<div style="font-size:12px;color:#667085">Your value: {val_str} · {med_str}</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+            _pctl_bar("BMI", pctl.get("bmi"))
+            _pctl_bar("Blood Pressure (diastolic)", pctl.get("bp"))
+            _pctl_bar("Waist Circumference", pctl.get("waist"))
+
+            st.markdown("---")
+            st.info(
+                "💡 **Higher percentile** means your value is above more people in your age group. "
+                "For BMI, blood pressure, and waist circumference, **lower** percentiles are generally healthier."
+            )
+
+        # ── Progress Tracking Tab ──
+        with tab_progress:
+            st.markdown("#### Your risk trend over time")
+            history = _load_history()
+
+            if len(history) < 2:
+                st.info("Your risk history will appear here after you run at least 2 assessments. Come back after your next check-in!")
+            else:
+                hist_df = pd.DataFrame(history)
+                hist_df["date"] = pd.to_datetime(hist_df["date"])
+
+                st.line_chart(hist_df.set_index("date")[["risk_pct"]], y_label="Risk %", x_label="Date")
+
+                st.markdown("##### Assessment history")
+                for entry in reversed(history[-10:]):
+                    pct = entry["risk_pct"]
+                    d = entry["date"][:10]
+                    bmi_h = entry.get("bmi", "?")
+                    st.markdown(
+                        f'<div class="metric-card" style="margin-bottom:8px;padding:10px 14px">'
+                        f'<span style="font-weight:600;font-size:18px;color:#1f2d46">{pct}%</span>'
+                        f'<span style="font-size:12px;color:#667085;margin-left:12px">{d}</span>'
+                        f'<span style="font-size:12px;color:#667085;margin-left:12px">BMI {bmi_h}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            if len(history) >= 2:
+                first = history[0]["risk_pct"]
+                last = history[-1]["risk_pct"]
+                delta = last - first
+                if delta < 0:
+                    st.success(f"📉 Your risk has decreased by {abs(delta)} points since your first assessment!")
+                elif delta > 0:
+                    st.warning(f"📈 Your risk has increased by {delta} points. Consider reviewing the action plan.")
+                else:
+                    st.info("Your risk has remained stable.")
+
+        # ── Export PDF Tab ──
+        with tab_export:
+            st.markdown("#### Export your results")
+            st.markdown("Generate a one-page PDF summary to bring to your next doctor visit.")
+
+            pdf_bytes = generate_report_pdf(data)
+            st.download_button(
+                label="📄 Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"glycocast_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+            st.caption("The PDF includes your risk score, key metrics, top risk drivers, action plan, and questions for your doctor.")
 
         st.markdown('</div>', unsafe_allow_html=True)
     else:
@@ -443,15 +597,34 @@ else:
 
 col1, col2 = st.columns(2)
 with col1:
-    bmi = synced_slider_number("BMI (kg/m²)", 15.0, 50.0, 25.0, step=0.1, format="%.1f", key="bmi")
+    if weight_unit == "lbs":
+        weight = synced_slider_number("Weight (lbs)", 88, 440, 154, step=1, key="weight")
+        weight_kg = round(lbs_to_kg(weight), 1)
+    else:
+        weight = synced_slider_number("Weight (kg)", 40, 200, 70, step=1, key="weight")
+        weight_kg = float(weight)
 with col2:
-    age = synced_slider_number("Age (years)", 18, 100, 35, step=1, key="age")
+    if length_unit == "inches":
+        height = synced_slider_number("Height (inches)", 48, 84, 66, step=1, key="height")
+        height_m = round(inches_to_cm(height) / 100, 3)
+    else:
+        height = synced_slider_number("Height (cm)", 120, 215, 170, step=1, key="height")
+        height_m = round(height / 100, 3)
+
+bmi = round(weight_kg / (height_m ** 2), 1) if height_m > 0 else 25.0
+st.markdown(f"**Calculated BMI: {bmi} kg/m²**")
+
+age = synced_slider_number("Age (years)", 18, 100, 35, step=1, key="age")
 
 col1, col2 = st.columns(2)
 with col1:
     blood_pressure = synced_slider_number("Blood Pressure - Diastolic (mmHg)", 50, 120, 80, step=1, key="blood_pressure")
 with col2:
-    waist_circumference = synced_slider_number("Waist Circumference (cm)", 50, 150, 85, step=1, key="waist")
+    if length_unit == "inches":
+        waist_raw = synced_slider_number("Waist Circumference (inches)", 20, 60, 33, step=1, key="waist")
+        waist_circumference = round(inches_to_cm(waist_raw), 1)
+    else:
+        waist_circumference = synced_slider_number("Waist Circumference (cm)", 50, 150, 85, step=1, key="waist")
 
 # ── NEW: Medical History ──
 st.markdown('<h2 class="section-header">🏥 Medical History <span class="new-badge">NEW</span></h2>', unsafe_allow_html=True)
@@ -513,7 +686,11 @@ with col1:
     know_glucose = st.checkbox("I know my glucose value")
     glucose = None
     if know_glucose:
-        glucose = synced_slider_number("Glucose (mg/dL)", 50, 300, 100, step=1, key="glucose")
+        if glucose_unit == "mmol/L":
+            glucose_raw = synced_slider_number("Glucose (mmol/L)", 2.8, 16.7, 5.6, step=0.1, format="%.1f", key="glucose")
+            glucose = round(mmol_to_mgdl(glucose_raw), 1)
+        else:
+            glucose = synced_slider_number("Glucose (mg/dL)", 50, 300, 100, step=1, key="glucose")
 
 with col2:
     know_insulin = st.checkbox("I know my insulin value")
@@ -611,11 +788,25 @@ if st.button("🔮 Predict My Risk", type="primary", use_container_width=True):
         "bmi": float(patient.bmi),
         "bp": float(patient.blood_pressure),
         "gluc": float(features['glucose']),
+        "age": int(patient.age),
     }
     
     # Add new demographic info to results
     content["sex"] = sex
     content["ethnicity"] = ethnicity
+
+    # ── Save to progress history ──
+    history = _load_history()
+    history.append({
+        "date": datetime.now().isoformat(),
+        "risk_pct": risk_pct,
+        "bmi": round(patient.bmi, 1),
+        "bp": round(patient.blood_pressure, 1),
+        "waist": round(patient.waist_circumference, 1),
+        "glucose": round(features['glucose'], 1),
+        "age": patient.age,
+    })
+    _save_history(history)
 
     st.session_state["results_data"] = content
     st.session_state["page"] = "results"
